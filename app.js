@@ -287,7 +287,7 @@ $('copyDiagnostic').onclick=()=>{navigator.clipboard?.writeText(lastSaveError||'
 $('retryCloud').onclick=()=>{if(current){saveNotesSoon();toast('Trying to sync this lesson again')}};$('refreshCloud').onclick=drawWeeks;$('openAdmin').onclick=()=>{show('admin');drawAdmin()};$('uploadBtn').onclick=uploadFile;$('exportLibrary').onclick=()=>downloadBlob(new Blob([JSON.stringify({library:localLibrary(),exported:new Date().toISOString()},null,2)],{type:'application/json'}),'study-notes-local-library.json');
 $('saveConfig').onclick=()=>{config={...config,clientId:$('clientId').value.trim(),folderId:$('folderId').value.trim(),adminEmail:$('adminEmail').value.trim().toLowerCase()};setConfig();toast('Settings saved on this device')};$('connectGoogle').onclick=connect;$('disconnectGoogle').onclick=()=>{if(access&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(access,()=>{});access='';identity='';notesFileId='';updateSync();refreshAccount();toast('Disconnected')};$('setupFolder').onclick=setupFolder;$('shareFolder').onclick=shareFolder;
 function refreshAccount(){$('clientId').value=config.clientId||'';$('folderId').value=config.folderId||'';$('adminEmail').value=config.adminEmail||'';$('whoAmI').textContent=identity?'Signed in: '+identity:'Not signed in to Google';}
-document.querySelector('[data-nav="home"]').onclick = () => show('home');
+document.querySelector('#weeksView [data-nav="home"]').addEventListener('click',()=>show('home'));
 initSubjects();refreshAccount();updateSync();show('home');
 window.addEventListener('load',()=>setTimeout(trySilentReconnect,700));
 window.addEventListener('pageshow',event=>{if(event.persisted&&!access)trySilentReconnect()});

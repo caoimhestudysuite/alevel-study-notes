@@ -4,7 +4,7 @@ const CATEGORIES=[['Law','Learn','⚖️','#2468aa'],['Law','Explore','⚖️','
 const DRIVE='https://www.googleapis.com/drive/v3/files',UPLOAD='https://www.googleapis.com/upload/drive/v3/files';
 const SCOPES='https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
 const SKEY='study-notes-v4-config',LOCAL='study-notes-v4-library';
-let config=JSON.parse(localStorage.getItem(SKEY)||'{}'), access='',identity='',tokenClient=null, folderCache={},view='home',category='',week=8,library=[],current=null,pdf=null,slide=0,slides=[],marks={},teacherNotes={},undo=[],noteHistory=[],drag=null,erase=false,finger=false,paragraph=false,debounce=null,notesFileId='',notesCloud={},renderEpoch=0;
+let config=JSON.parse(localStorage.getItem(SKEY)||'{}'), access='',identity='',tokenClient=null, folderCache={},view='home',category='',week=8,library=[],current=null,pdf=null,slide=0,slides=[],marks={},teacherNotes={},undo=[],noteHistory=[],drag=null,erase=false,finger=false,paragraph=false,debounce=null,notesFileId='',notesCloud={},renderEpoch=0,cloudWriteQueue=Promise.resolve(),lastSaveError='',lessonScanEpoch=0;
 const h=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(msg){$('toast').textContent=msg;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),3500)}
 function show(name){view=name;document.querySelectorAll('.view').forEach(e=>e.classList.toggle('hidden',e.id!==name+'View'));window.scrollTo(0,0)}
@@ -24,7 +24,35 @@ async function drawWeeks(){const target=$('weeksList');target.innerHTML='<p>Load
 async function openWeek(n){week=n;show('lessons');$('lessonsTitle').textContent=category;$('lessonWeekHeading').textContent=`${category} · Week ${week}`;await listLessons()}
 async function listLessons(){const el=$('lessonList');el.innerHTML='<p>Loading presentations…</p>';try{if(access&&config.folderId){const folder=await ensureCategoryFolders(category,week);library=folder?(await listChildren(folder)).filter(f=>f.mimeType==='application/vnd.google-apps.presentation'||f.mimeType==='application/pdf'):[]}else library=localLibrary().filter(f=>f.category===category&&f.week===week);el.innerHTML=library.length?'':'<p>No presentations in this week.</p>';for(const file of library){let button=document.createElement('button');button.className='lesson';button.innerHTML=`<span><strong>${h(file.name)}</strong><small>${file.mimeType==='application/pdf'?'PDF':'PowerPoint slides'} · Tap to open</small></span><span>→</span>`;button.onclick=()=>openLesson(file);el.append(button)}}catch(e){el.textContent=e.message}}
 async function pdfLibrary(){if(!window.pdfjsLib)throw Error('PDF renderer could not load. Check internet connection.');window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}
-async function openLesson(file){if(debounce){clearTimeout(debounce);debounce=null;if(current){try{await writeCloudNotes(current.id,{marks,notes:teacherNotes,updated:new Date().toISOString()})}catch(e){console.warn('Previous lesson saved on device only',e)}}}current=file;slide=0;slides=[];pdf=null;marks={};teacherNotes={};undo=[];notesFileId='';show('reader');$('readerTitle').textContent=file.name;$('reading').textContent='Loading presentation and its selectable text…';$('slideCount').textContent='Loading';try{await pdfLibrary();let bytes;if(file.localBytes)bytes=new Uint8Array(file.localBytes);else if(file.mimeType==='application/pdf')bytes=new Uint8Array(await (await drive(`${DRIVE}/${encodeURIComponent(file.id)}?alt=media`)).arrayBuffer());else bytes=new Uint8Array(await (await drive(`${DRIVE}/${encodeURIComponent(file.id)}/export?mimeType=application%2Fpdf`)).arrayBuffer());pdf=await pdfjsLib.getDocument({data:bytes}).promise;slides=new Array(pdf.numPages);const notes=await loadNotes(file.id);marks=notes.marks||{};teacherNotes=notes.notes||{};await renderSlide()}catch(err){$('reading').textContent='Could not open this presentation: '+err.message;toast('Presentation load failed')}}
+async function openLesson(file){
+ if(debounce){clearTimeout(debounce);debounce=null;if(current){const prior=current.id, snapshot={marks:structuredClone(marks),notes:{...teacherNotes},updated:new Date().toISOString()};queueCloudSave(prior,snapshot)}}
+ current=file;slide=0;slides=[];pdf=null;marks={};teacherNotes={};undo=[];notesFileId='';lessonScanEpoch++;
+ show('reader');$('readerSubject').textContent=category||'A-Level Study Notes';$('readerTitle').textContent='Week '+week+' · '+file.name;
+ $('lessonTabs').innerHTML='';$('reading').textContent='Loading presentation and its selectable text…';$('slideCount').textContent='Loading';
+ try{await pdfLibrary();let bytes;if(file.localBytes)bytes=new Uint8Array(file.localBytes);else if(file.mimeType==='application/pdf')bytes=new Uint8Array(await (await drive(`${DRIVE}/${encodeURIComponent(file.id)}?alt=media`)).arrayBuffer());else bytes=new Uint8Array(await (await drive(`${DRIVE}/${encodeURIComponent(file.id)}/export?mimeType=application%2Fpdf`)).arrayBuffer());pdf=await pdfjsLib.getDocument({data:bytes}).promise;slides=new Array(pdf.numPages);const notes=await loadNotes(file.id);marks=notes.marks||{};teacherNotes=notes.notes||{};await renderSlide();detectLessonSections(pdf,++lessonScanEpoch)}catch(err){$('reading').textContent='Could not open this presentation: '+err.message;toast('Presentation load failed')}
+}
+async function detectLessonSections(document,epoch){
+ // Consecutive classes inside a single uploaded PowerPoint are often separated by a repeated recording notice.
+ const found=[];
+ for(let n=0;n<document.numPages;n++){
+  if(epoch!==lessonScanEpoch||document!==pdf)return;
+  try{let page=await document.getPage(n+1),tc=await page.getTextContent();let text=tc.items.map(x=>x.str||'').join(' ').replace(/\s+/g,' ').toLowerCase();
+   if(/this lesson is being recorded/.test(text)&&(n===0||n>found.at(-1)+5))found.push(n);
+  }catch(e){console.warn('Lesson separator scan issue',e)}
+  if(n%12===11)await new Promise(r=>setTimeout(r,0));
+ }
+ if(epoch!==lessonScanEpoch||document!==pdf)return;
+ if(!found.length)found.push(0);
+ if(found[0]!==0)found.unshift(0);
+ const container=$('lessonTabs');container.replaceChildren();
+ if(found.length<2)return;
+ const shorthand=['Literal','Golden','Mischief'];
+ const isLaw=category.toLowerCase().startsWith('law')&&/statutory interpretation/i.test(current.name);
+ for(let k=0;k<found.length;k++){
+   const position=found[k],b=document.createElement('button');b.type='button';b.textContent=`Lesson ${k+1}`+(isLaw&&k<3?' · '+shorthand[k]:' · Slide '+(position+1));b.onclick=()=>goSlide(position);container.append(b);
+ }
+}
+
 async function loadPage(n){if(slides[n])return slides[n];const p=await pdf.getPage(n+1);const tc=await p.getTextContent();const blocks=[];for(const item of tc.items){if(!item.str||!item.str.trim())continue;const y=item.transform[5],x=item.transform[4],last=blocks.at(-1);if(last&&Math.abs(last.y-y)<3.5&&Math.abs(x-last.right)<28){last.text+=' '+item.str;last.right=x+item.width}else blocks.push({text:item.str,x,y,right:x+item.width})}slides[n]={pdfPage:p,blocks};return slides[n]}
 function markedKey(i){return `${slide}:${i}`}
 function unite(xs){xs=xs.filter(([a,b])=>b>a).sort((p,q)=>p[0]-q[0]);let out=[];for(const [a,b] of xs){const last=out.at(-1);if(last&&a<=last[1])last[1]=Math.max(last[1],b);else out.push([a,b])}return out}
@@ -42,10 +70,48 @@ $('reading').addEventListener('pointerup',e=>{if(!drag||drag.id!==e.pointerId)re
 $('reading').addEventListener('pointercancel',()=>{drag=null;$('reading').classList.remove('dragging')});
 async function goSlide(n){if(!pdf||n<0||n>=pdf.numPages)return;slide=n;window.getSelection()?.removeAllRanges();await renderSlide()}
 function localNoteKey(id){return `study-notes-v4-notes:${id}`}
-async function loadNotes(id){let local={};try{local=JSON.parse(localStorage.getItem(localNoteKey(id))||'{}')}catch{}if(!access||id.startsWith('local-'))return local;try{const cloud=await readCloudNotes(id);if(!cloud)return local;return new Date(local.updated||0)>new Date(cloud.updated||0)?local:cloud}catch(e){toast('Cloud notes unavailable; using local notes');return local}}
-function saveNotesSoon(){if(!current)return;const lessonId=current.id,payload={marks:JSON.parse(JSON.stringify(marks)),notes:{...teacherNotes},updated:new Date().toISOString()};localStorage.setItem(localNoteKey(lessonId),JSON.stringify(payload));$('syncState').textContent=access?'Saving to Drive…':'Saved on this device';clearTimeout(debounce);debounce=setTimeout(async()=>{if(access&&!lessonId.startsWith('local-')){try{await writeCloudNotes(lessonId,payload);$('syncState').textContent='✓ Synced to Drive'}catch(e){$('syncState').textContent='⚠ Saved locally only';toast('Cloud save failed — export a backup')}}},1100)}
-async function readCloudNotes(id){if(!access)return null;const name='study-notes-'+id+'.json';const q=new URLSearchParams({spaces:'appDataFolder',q:`name = '${name}' and trashed = false`,fields:'files(id,name),nextPageToken',pageSize:'20'});const files=(await json(DRIVE+'?'+q)).files||[];if(!files.length)return null;notesFileId=files[0].id;const result=await drive(`${DRIVE}/${notesFileId}?alt=media`);return await result.json()}
-async function writeCloudNotes(id,payload){const name='study-notes-'+id+'.json';let f=notesFileId;if(!f){const q=new URLSearchParams({spaces:'appDataFolder',q:`name = '${name}' and trashed = false`,fields:'files(id)',pageSize:'5'});f=(await json(DRIVE+'?'+q)).files?.[0]?.id||''}if(f){await drive(`${UPLOAD}/${f}?uploadType=media`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})}else{const created=await multipartUpload(new Blob([JSON.stringify(payload)],{type:'application/json'}),{name,parents:['appDataFolder'],mimeType:'application/json'});f=created.id}notesFileId=f;}
+async function loadNotes(id){
+ let local={};try{local=JSON.parse(localStorage.getItem(localNoteKey(id))||'{}')}catch{}
+ if(!access||id.startsWith('local-'))return local;
+ try{const cloud=await readCloudNotes(id);if(!cloud)return local;return new Date(local.updated||0)>new Date(cloud.updated||0)?local:cloud}
+ catch(e){console.warn('Cloud note read failed',e);$('syncState').textContent='⚠ Notes on this device';$('retryCloud').classList.remove('hidden');return local}
+}
+function queueCloudSave(lessonId,payload){
+ if(!access||lessonId.startsWith('local-'))return Promise.resolve();
+ cloudWriteQueue=cloudWriteQueue.catch(()=>{}).then(async()=>{
+   try{await writeCloudNotes(lessonId,payload);if(current?.id===lessonId){$('syncState').textContent='✓ Synced to Drive';$('retryCloud').classList.add('hidden');lastSaveError=''}}
+   catch(e){console.error('Cloud save failed',e);lastSaveError=e.message;if(current?.id===lessonId){$('syncState').textContent='⚠ Saved locally · Cloud sync failed';$('retryCloud').classList.remove('hidden')}}
+ });
+ return cloudWriteQueue;
+}
+function saveNotesSoon(){
+ if(!current)return;
+ const lessonId=current.id,payload={marks:JSON.parse(JSON.stringify(marks)),notes:{...teacherNotes},updated:new Date().toISOString()};
+ localStorage.setItem(localNoteKey(lessonId),JSON.stringify(payload));
+ $('syncState').textContent=access?'Saving to Drive…':'✓ Saved on this device';
+ clearTimeout(debounce);
+ debounce=setTimeout(()=>{debounce=null;queueCloudSave(lessonId,payload)},1600);
+}
+async function getNoteFolder(){
+ if(!config.folderId)throw Error('Set the Study Notes library folder in Account');
+ // Ordinary private Drive folder, not the special appDataFolder (which requires extra OAuth scopes).
+ return folderNamed(config.folderId,'.Study Notes - Saved Highlights',true);
+}
+async function findNoteFile(id){
+ const folder=await getNoteFolder();const name='study-notes-'+id+'.json';
+ return (await listChildren(folder)).find(f=>f.name===name&&f.mimeType==='application/json')||null;
+}
+async function readCloudNotes(id){
+ if(!access)return null;
+ const file=await findNoteFile(id);if(!file)return null;
+ const result=await drive(`${DRIVE}/${encodeURIComponent(file.id)}?alt=media`);return result.json();
+}
+async function writeCloudNotes(id,payload){
+ const existing=await findNoteFile(id);
+ if(existing){await drive(`${UPLOAD}/${encodeURIComponent(existing.id)}?uploadType=media`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})}
+ else{const folder=await getNoteFolder();await multipartUpload(new Blob([JSON.stringify(payload)],{type:'application/json'}),{name:'study-notes-'+id+'.json',parents:[folder],mimeType:'application/json'})}
+}
+
 async function multipartUpload(file,metadata){const boundary='study_notes_'+Date.now();const body=new Blob([`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${file.type||'application/octet-stream'}\r\n\r\n`,file,`\r\n--${boundary}--`]);return json(UPLOAD+'?uploadType=multipart&fields=id,name,mimeType',{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body})}
 async function resumableUpload(file,metadata){const session=await drive(UPLOAD+'?uploadType=resumable&fields=id,name,mimeType',{method:'POST',headers:{'Content-Type':'application/json; charset=UTF-8','X-Upload-Content-Type':file.type||'application/vnd.openxmlformats-officedocument.presentationml.presentation','X-Upload-Content-Length':String(file.size)},body:JSON.stringify(metadata)});const loc=session.headers.get('Location');if(!loc)throw Error('Google did not return an upload session URL');return json(loc,{method:'PUT',headers:{'Content-Type':file.type||'application/octet-stream'},body:file})}
 function noteBackup(){if(!current)return;const body=JSON.stringify({version:4,lessonId:current.id,lesson:current.name,marks,notes:teacherNotes},null,2);downloadBlob(new Blob([body],{type:'application/json'}),'study-notes-'+current.id+'.json')}
@@ -62,7 +128,7 @@ $('tryPdf').onclick=localImport;$('homeBtn').onclick=$('goHome').onclick=()=>sho
 $('pencilBtn').onclick=()=>{erase=false;$('pencilBtn').classList.add('active');$('eraseBtn').classList.remove('active')};$('eraseBtn').onclick=()=>{erase=true;$('eraseBtn').classList.add('active');$('pencilBtn').classList.remove('active')};$('fingerBtn').onclick=()=>{finger=!finger;$('fingerBtn').textContent='Finger: '+(finger?'ON':'OFF');$('fingerBtn').classList.toggle('active',finger)};$('paragraphBtn').onclick=()=>{paragraph=!paragraph;$('paragraphBtn').textContent='Paragraph: '+(paragraph?'ON':'OFF');$('paragraphBtn').classList.toggle('active',paragraph)};$('undoBtn').onclick=()=>{if(undo.length){marks=JSON.parse(undo.pop());renderTextOnly();saveNotesSoon()}};
 $('teacherNote').oninput=e=>{noteHistory.push({slide,value:teacherNotes[slide]||''});if(noteHistory.length>100)noteHistory.shift();teacherNotes[slide]=e.target.value;saveNotesSoon()};$('deleteWord').onclick=()=>{const area=$('teacherNote'),text=area.value;let a=area.selectionStart,b=area.selectionEnd;if(a===b){while(a>0&&/\s/.test(text[a-1]))a--;while(a>0&&!/\s/.test(text[a-1]))a--}const result=text.slice(0,a)+text.slice(b);area.value=result;teacherNotes[slide]=result;saveNotesSoon();area.focus();area.setSelectionRange(a,a)};$('undoText').onclick=()=>{if(!noteHistory.length)return;let j=noteHistory.length-1;while(j>=0&&noteHistory[j].slide!==slide)j--;if(j<0)return;const result=noteHistory.splice(j,1)[0].value;$('teacherNote').value=result;teacherNotes[slide]=result;saveNotesSoon()};
 $('revisionBtn').onclick=revision;$('returnReader').onclick=()=>show('reader');$('printRevision').onclick=()=>print();$('exportLesson').onclick=noteBackup;$('importLesson').onclick=()=>$('importJson').click();$('importJson').onchange=async e=>{try{const data=JSON.parse(await e.target.files[0].text());if(!data.marks||!data.notes)throw Error('Unrecognised file');if(!confirm('Replace this lesson’s current highlights and notes?'))return;marks=data.marks;teacherNotes=data.notes;saveNotesSoon();await revision();toast('Backup restored')}catch(err){toast(err.message)}};
-$('refreshCloud').onclick=drawWeeks;$('openAdmin').onclick=()=>{show('admin');drawAdmin()};$('uploadBtn').onclick=uploadFile;$('exportLibrary').onclick=()=>downloadBlob(new Blob([JSON.stringify({library:localLibrary(),exported:new Date().toISOString()},null,2)],{type:'application/json'}),'study-notes-local-library.json');
+$('retryCloud').onclick=()=>{if(current){saveNotesSoon();toast('Trying to sync this lesson again')}};$('refreshCloud').onclick=drawWeeks;$('openAdmin').onclick=()=>{show('admin');drawAdmin()};$('uploadBtn').onclick=uploadFile;$('exportLibrary').onclick=()=>downloadBlob(new Blob([JSON.stringify({library:localLibrary(),exported:new Date().toISOString()},null,2)],{type:'application/json'}),'study-notes-local-library.json');
 $('saveConfig').onclick=()=>{config={...config,clientId:$('clientId').value.trim(),folderId:$('folderId').value.trim(),adminEmail:$('adminEmail').value.trim().toLowerCase()};setConfig();toast('Settings saved on this device')};$('connectGoogle').onclick=connect;$('disconnectGoogle').onclick=()=>{if(access&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(access,()=>{});access='';identity='';notesFileId='';updateSync();refreshAccount();toast('Disconnected')};$('setupFolder').onclick=setupFolder;$('shareFolder').onclick=shareFolder;
 function refreshAccount(){$('clientId').value=config.clientId||'';$('folderId').value=config.folderId||'';$('adminEmail').value=config.adminEmail||'';$('whoAmI').textContent=identity?'Signed in: '+identity:'Not signed in to Google';}
 initSubjects();refreshAccount();updateSync();show('home');

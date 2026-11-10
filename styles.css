@@ -20,3 +20,17 @@
 .hidden{display:none!important}
 #retryCloud{font-size:12px;padding:7px 9px;background:#fff;color:#254461;border-color:#bdcbd7}
 @media(max-width:900px){.readerGrid{grid-template-columns:1fr}.readerView .readerHeader{position:static}}
+
+/* v6: more readable lesson layout with two panels maintained on iPad landscape */
+.versionTag{font-size:11px;color:#cedee9;border:1px solid #69839a;padding:4px 7px;border-radius:6px}
+.syncDiagnostic{margin:8px 16px 0;padding:10px 12px;border:1px solid #dca87b;background:#fff4e8;color:#7b311b;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px}
+.diagnosticButton{display:none;margin:7px 16px;font-size:12px;padding:7px 10px}
+.syncDiagnostic:not(.hidden)+.diagnosticButton{display:inline-block}
+.readerView{margin-top:-10px}
+.readerView .readerHeader{box-shadow:0 2px 4px #132b4013}
+.readerView .breadcrumbs{min-height:72px}
+.readerView .readerToolbar{gap:7px;padding:10px}
+.readerView .readerGrid{gap:16px}
+.readerView .readerGrid .card{box-shadow:0 1px 4px #0e2d5112}
+@media(min-width:700px){.readerGrid{grid-template-columns:minmax(290px,0.95fr) minmax(340px,1.25fr)} .readerView .readerHeader{position:static}}
+@media(max-width:699px){.readerGrid{grid-template-columns:1fr}}

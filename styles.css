@@ -40,3 +40,12 @@
 #resetLesson{font-size:12px;border-color:#e8c6c9;background:#fff5f5;color:#982838}
 #revisionDriveStatus{max-width:850px;margin:0 auto 14px;font-size:13px}
 #revisionDriveStatus a{color:#236899;font-weight:650}
+
+/* v8: consistent headings, with an explicit manual fallback if Google Slides lacks a title. */
+.slideTitleControls{padding:9px 17px 0;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.slideTitleControls button{padding:5px 9px;font-size:12px;flex-shrink:0}
+.slideTitleEdit{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#eef4fa;padding:10px 16px}
+.slideTitleEdit label{font-size:13px;font-weight:700}
+.slideTitleEdit input{flex:1;min-width:190px;padding:8px;border:1px solid #c8d5e2;border-radius:7px}
+.slideTitleEdit button{background:#236899;color:#fff}
+@media(max-width:700px){.slideTitleControls{padding:8px 10px 0}.slideTitleEdit{flex-direction:column;align-items:stretch}}

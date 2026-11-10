@@ -4,8 +4,8 @@ const CATEGORIES=[['Law','Learn','⚖️','#2468aa'],['Law','Explore','⚖️','
 const DRIVE='https://www.googleapis.com/drive/v3/files',UPLOAD='https://www.googleapis.com/upload/drive/v3/files';
 const SCOPES='https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
 const SKEY='study-notes-v4-config',LOCAL='study-notes-v4-library';
-const APP_VERSION='7.0';
-let config=JSON.parse(localStorage.getItem(SKEY)||'{}'), access='',identity='',tokenClient=null, folderCache={},view='home',category='',week=8,library=[],current=null,pdf=null,slide=0,slides=[],marks={},teacherNotes={},undo=[],noteHistory=[],drag=null,erase=false,finger=false,paragraph=false,debounce=null,notesFileId='',notesCloud={},renderEpoch=0,cloudWriteQueue=Promise.resolve(),lastSaveError='',lessonScanEpoch=0,renderTask=null,scanTimer=null,silentAuthInFlight=false;
+const APP_VERSION='8.0';
+let config=JSON.parse(localStorage.getItem(SKEY)||'{}'), access='',identity='',tokenClient=null, folderCache={},view='home',category='',week=8,library=[],current=null,pdf=null,slide=0,slides=[],marks={},teacherNotes={},undo=[],noteHistory=[],drag=null,erase=false,finger=false,paragraph=false,debounce=null,notesFileId='',notesCloud={},renderEpoch=0,cloudWriteQueue=Promise.resolve(),lastSaveError='',lessonScanEpoch=0,renderTask=null,scanTimer=null,silentAuthInFlight=false,slideTitles={},titleOverrides={};
 const h=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(msg){$('toast').textContent=msg;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),3500)}
 function show(name){view=name;document.querySelectorAll('.view').forEach(e=>e.classList.toggle('hidden',e.id!==name+'View'));window.scrollTo(0,0)}
@@ -27,12 +27,13 @@ async function openWeek(n){week=n;show('lessons');$('lessonsTitle').textContent=
 async function listLessons(){const el=$('lessonList');el.innerHTML='<p>Loading presentations…</p>';try{if(access&&config.folderId){const folder=await ensureCategoryFolders(category,week);library=folder?(await listChildren(folder)).filter(f=>f.mimeType==='application/vnd.google-apps.presentation'||f.mimeType==='application/pdf'):[]}else library=localLibrary().filter(f=>f.category===category&&f.week===week);el.innerHTML=library.length?'':'<p>No presentations in this week.</p>';for(const file of library){let button=document.createElement('button');button.className='lesson';button.innerHTML=`<span><strong>${h(file.name)}</strong><small>${file.mimeType==='application/pdf'?'PDF':'PowerPoint slides'} · Tap to open</small></span><span>→</span>`;button.onclick=()=>openLesson(file);el.append(button)}}catch(e){el.textContent=e.message}}
 async function pdfLibrary(){if(!window.pdfjsLib)throw Error('PDF renderer could not load. Check internet connection.');window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}
 async function openLesson(file){
- if(debounce){clearTimeout(debounce);debounce=null;if(current){const prior=current.id, snapshot={marks:structuredClone(marks),notes:{...teacherNotes},updated:new Date().toISOString()};queueCloudSave(prior,snapshot)}}
+ if(debounce){clearTimeout(debounce);debounce=null;if(current){const prior=current.id, snapshot={marks:structuredClone(marks),notes:{...teacherNotes},titles:{...titleOverrides},updated:new Date().toISOString()};queueCloudSave(prior,snapshot)}}
  if(renderTask){try{renderTask.cancel()}catch{}renderTask=null;}
- current=file;slide=0;slides=[];pdf=null;marks={};teacherNotes={};undo=[];notesFileId='';lessonScanEpoch++;
+ current=file;slide=0;slides=[];pdf=null;marks={};teacherNotes={};titleOverrides={};undo=[];notesFileId='';lessonScanEpoch++;
+ slideTitles=readTitleCache(file.id);
  show('reader');$('readerSubject').textContent=category||'A-Level Study Notes';$('readerTitle').textContent='Week '+week+' · '+file.name;
  $('lessonTabs').innerHTML='';$('reading').textContent='Loading presentation and its selectable text…';$('syncDiagnostic').classList.add('hidden');$('slideCount').textContent='Loading';
- try{await pdfLibrary();let bytes;if(file.localBytes)bytes=new Uint8Array(file.localBytes);else if(file.mimeType==='application/pdf')bytes=new Uint8Array(await (await drive(`${DRIVE}/${encodeURIComponent(file.id)}?alt=media`)).arrayBuffer());else bytes=new Uint8Array(await (await drive(`${DRIVE}/${encodeURIComponent(file.id)}/export?mimeType=application%2Fpdf`)).arrayBuffer());pdf=await pdfjsLib.getDocument({data:bytes}).promise;slides=new Array(pdf.numPages);const notes=await loadNotes(file.id);marks=notes.marks||{};teacherNotes=notes.notes||{};await renderSlide();const scan=++lessonScanEpoch;renderLessonShortcuts();scanTimer=setTimeout(()=>detectLessonSections(pdf,scan),900)}catch(err){$('reading').textContent='Could not open this presentation: '+err.message;toast('Presentation load failed')}
+ try{await pdfLibrary();let bytes;if(file.localBytes)bytes=new Uint8Array(file.localBytes);else if(file.mimeType==='application/pdf')bytes=new Uint8Array(await (await drive(`${DRIVE}/${encodeURIComponent(file.id)}?alt=media`)).arrayBuffer());else bytes=new Uint8Array(await (await drive(`${DRIVE}/${encodeURIComponent(file.id)}/export?mimeType=application%2Fpdf`)).arrayBuffer());pdf=await pdfjsLib.getDocument({data:bytes}).promise;slides=new Array(pdf.numPages);const notes=await loadNotes(file.id);marks=notes.marks||{};teacherNotes=notes.notes||{};titleOverrides=notes.titles||{};await renderSlide();const scan=++lessonScanEpoch;renderLessonShortcuts();scanTimer=setTimeout(()=>detectLessonSections(pdf,scan),900);if(file.mimeType==='application/vnd.google-apps.presentation'&&access)loadSlidesTitles(file.id)}catch(err){$('reading').textContent='Could not open this presentation: '+err.message;toast('Presentation load failed')}
 }
 function renderLessonShortcuts(){
  const nav=$('lessonTabs');nav.replaceChildren();if(!pdf||!current)return;
@@ -63,6 +64,36 @@ async function detectLessonSections(document,epoch){
  found.forEach((n,k)=>{const b=document.createElement('button');b.textContent=`Lesson ${k+1} · Slide ${n+1}`;b.onclick=()=>goSlide(n);nav.append(b)});
 }
 
+// Google Slides contains the original, editable slide headings even when the exported PDF omits them.
+function readTitleCache(id){try{return JSON.parse(localStorage.getItem('study-notes-slide-titles:'+id)||'{}')}catch{return {}}}
+function cleanTitle(s){return String(s||'').replace(/\s+/g,' ').trim()}
+function sameTitle(a,b){return cleanTitle(a).toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu,'')===cleanTitle(b).toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu,'')}
+async function loadSlidesTitles(id){
+ try{
+  const url='https://slides.googleapis.com/v1/presentations/'+encodeURIComponent(id)+'?fields='+encodeURIComponent('slides(pageElements(shape(placeholder,text(textElements)),transform))');
+  const result=await (await drive(url)).json();if(current?.id!==id)return;
+  const found={};(result.slides||[]).forEach((page,number)=>{
+   const shapes=(page.pageElements||[]).map(el=>({
+    title:cleanTitle((el.shape?.text?.textElements||[]).map(t=>t.textRun?.content||'').join('')),
+    kind:el.shape?.placeholder?.type||'',
+    y:el.transform?.translateY??Infinity
+   })).filter(x=>x.title.length>=3&&x.title.length<=120);
+   const primary=shapes.find(x=>x.kind==='TITLE'||x.kind==='CENTERED_TITLE')||
+    shapes.filter(x=>x.title.length<=85).sort((a,b)=>a.y-b.y)[0];
+   if(primary)found[number]=primary.title;
+  });
+  slideTitles={...slideTitles,...found};localStorage.setItem('study-notes-slide-titles:'+id,JSON.stringify(slideTitles));
+  if(current?.id===id&&pdf)await renderSlide();
+ }catch(err){console.warn('Google Slides title lookup unavailable',err);$('titleHint').textContent='Title lookup unavailable. Use Edit title if a heading is missing. Enable Google Slides API in Google Cloud if needed.';}
+}
+function titleForPage(n){return cleanTitle(titleOverrides[n]||slideTitles[n]||'')}
+function ensureHeadingBlock(n,data){
+ const title=titleForPage(n);if(!title)return null;
+ // Use the original PDF text when it already contains the title: prevents duplication.
+ if(data.blocks.some(b=>sameTitle(b.text,title)))return null;
+ if(!data.syntheticTitle||data.syntheticTitle.text!==title)data.syntheticTitle={text:title,synthetic:true};
+ return {index:data.blocks.length,block:data.syntheticTitle};
+}
 async function loadPage(n){if(slides[n])return slides[n];const p=await pdf.getPage(n+1);const tc=await p.getTextContent();const blocks=[];for(const item of tc.items){if(!item.str||!item.str.trim())continue;const y=item.transform[5],x=item.transform[4],last=blocks.at(-1);if(last&&Math.abs(last.y-y)<3.5&&Math.abs(x-last.right)<28){last.text+=' '+item.str;last.right=x+item.width}else blocks.push({text:item.str,x,y,right:x+item.width})}slides[n]={pdfPage:p,blocks};return slides[n]}
 function markedKey(i){return `${slide}:${i}`}
 function unite(xs){xs=xs.filter(([a,b])=>b>a).sort((p,q)=>p[0]-q[0]);let out=[];for(const [a,b] of xs){const last=out.at(-1);if(last&&a<=last[1])last[1]=Math.max(last[1],b);else out.push([a,b])}return out}
@@ -73,11 +104,16 @@ async function renderSlide(){
  const data=await loadPage(slide);if(epoch!==renderEpoch)return;
  // Update text immediately; the image render is allowed to finish afterwards.
  const reading=$('reading');reading.replaceChildren();
- for(let i=0;i<data.blocks.length;i++){
-  const b=data.blocks[i],div=document.createElement('div');div.className='block';div.dataset.block=i;
+ const synthetic=ensureHeadingBlock(slide,data);
+ const ordered=[...(synthetic?[synthetic]:[]),...data.blocks.map((block,index)=>({block,index}))];
+ for(const {block:b,index:i} of ordered){
+  const div=document.createElement('div');div.className='block';div.dataset.block=i;
+  if(synthetic&&i===synthetic.index)div.classList.add('headline');
   div.innerHTML=rangesHTML(b.text,marks[markedKey(i)]||[]);
   div.onclick=()=>{if(paragraph)applyRange(i,0,b.text.length)};reading.append(div);
  }
+ $('titleHint').textContent=titleForPage(slide)?'Title available for highlighting. You can correct it if needed.':'If the title is missing above, tap Edit title.';
+ $('titleEditWrap').classList.add('hidden');$('slideTitleInput').value=titleForPage(slide);
  $('teacherNote').value=teacherNotes[slide]||'';
  $('slideCount').textContent=`${slide+1} / ${pdf.numPages}`;$('slideGoto').value=slide+1;
  $('slideGoto').max=pdf.numPages;$('imageSlideNum').textContent=`Slide ${slide+1}`;
@@ -97,13 +133,13 @@ async function renderSlide(){
 }
 
 function record(){undo.push(JSON.stringify(marks));if(undo.length>60)undo.shift()}
-function applyRange(i,a,b){const data=slides[slide].blocks[i],len=data.text.length;a=Math.max(0,Math.min(a,len));b=Math.max(0,Math.min(b,len));if(a>b)[a,b]=[b,a];if(a===b)return;while(a>0&&!/\s/.test(data.text[a-1]))a--;while(b<len&&!/\s/.test(data.text[b]))b++;const k=markedKey(i),old=JSON.stringify(marks[k]||[]);const next=erase?subtract(marks[k]||[],a,b):unite([...(marks[k]||[]),[a,b]]);if(JSON.stringify(next)===old)return;record();marks[k]=next;saveNotesSoon();renderTextOnly()}
-function renderTextOnly(){const blockData=slides[slide]?.blocks||[];$('reading').querySelectorAll('.block').forEach((node,i)=>{node.innerHTML=rangesHTML(blockData[i].text,marks[markedKey(i)]||[])});$('selectionCount').textContent=`${Object.keys(marks).filter(k=>k.startsWith(slide+':')&&marks[k]?.length).length} marked blocks`}
+function applyRange(i,a,b){const pageData=slides[slide],data=i===pageData.blocks.length?pageData.syntheticTitle:pageData.blocks[i];if(!data)return;const len=data.text.length;a=Math.max(0,Math.min(a,len));b=Math.max(0,Math.min(b,len));if(a>b)[a,b]=[b,a];if(a===b)return;while(a>0&&!/\s/.test(data.text[a-1]))a--;while(b<len&&!/\s/.test(data.text[b]))b++;const k=markedKey(i),old=JSON.stringify(marks[k]||[]);const next=erase?subtract(marks[k]||[],a,b):unite([...(marks[k]||[]),[a,b]]);if(JSON.stringify(next)===old)return;record();marks[k]=next;saveNotesSoon();renderTextOnly()}
+function renderTextOnly(){const page=slides[slide];if(!page)return;$('reading').querySelectorAll('.block').forEach(node=>{const i=Number(node.dataset.block),block=i===page.blocks.length?page.syntheticTitle:page.blocks[i];if(block)node.innerHTML=rangesHTML(block.text,marks[markedKey(i)]||[])});$('selectionCount').textContent=`${Object.keys(marks).filter(k=>k.startsWith(slide+':')&&marks[k]?.length).length} marked blocks`}
 function caret(x,y){let r=document.caretRangeFromPoint?.(x,y);if(!r&&document.caretPositionFromPoint){const p=document.caretPositionFromPoint(x,y);if(p){r=document.createRange();r.setStart(p.offsetNode,p.offset);r.collapse(true)}}if(!r)return null;const block=(r.startContainer.nodeType===1?r.startContainer:r.startContainer.parentElement)?.closest('.block');if(!block||!$('reading').contains(block))return null;const pre=document.createRange();pre.selectNodeContents(block);try{pre.setEnd(r.startContainer,r.startOffset)}catch{return null}return {block:Number(block.dataset.block),offset:pre.toString().length}}
 function locatePointer(e){return caret(e.clientX,e.clientY)}
 $('reading').addEventListener('pointerdown',e=>{if(!pdf||(!finger&&e.pointerType!=='pen'))return;const start=locatePointer(e);if(!start)return;e.preventDefault();drag={id:e.pointerId,start,end:start,x:e.clientX,y:e.clientY};$('reading').classList.add('dragging');try{$('reading').setPointerCapture(e.pointerId)}catch{}});
 $('reading').addEventListener('pointermove',e=>{if(!drag||drag.id!==e.pointerId)return;e.preventDefault();drag.end=locatePointer(e)||drag.end;drag.x=e.clientX;drag.y=e.clientY},{passive:false});
-$('reading').addEventListener('pointerup',e=>{if(!drag||drag.id!==e.pointerId)return;const g=drag;drag=null;$('reading').classList.remove('dragging');const end=locatePointer(e)||g.end;const lo=Math.min(g.start.block,end.block),hi=Math.max(g.start.block,end.block);if(hi-lo>15)return;for(let i=lo;i<=hi;i++){let a=0,b=slides[slide].blocks[i].text.length;if(g.start.block===end.block){a=g.start.offset;b=end.offset}else if(g.start.block<end.block){if(i===lo)a=g.start.offset;if(i===hi)b=end.offset}else{if(i===lo)a=end.offset;if(i===hi)b=g.start.offset}applyRange(i,a,b)}});
+$('reading').addEventListener('pointerup',e=>{if(!drag||drag.id!==e.pointerId)return;const g=drag;drag=null;$('reading').classList.remove('dragging');const end=locatePointer(e)||g.end;const lo=Math.min(g.start.block,end.block),hi=Math.max(g.start.block,end.block);if(hi-lo>15)return;for(let i=lo;i<=hi;i++){let a=0,b=(i===slides[slide].blocks.length?slides[slide].syntheticTitle:slides[slide].blocks[i]).text.length;if(g.start.block===end.block){a=g.start.offset;b=end.offset}else if(g.start.block<end.block){if(i===lo)a=g.start.offset;if(i===hi)b=end.offset}else{if(i===lo)a=end.offset;if(i===hi)b=g.start.offset}applyRange(i,a,b)}});
 $('reading').addEventListener('pointercancel',()=>{drag=null;$('reading').classList.remove('dragging')});
 async function goSlide(n){if(!pdf||n<0||n>=pdf.numPages)return;slide=n;window.getSelection()?.removeAllRanges();await renderSlide()}
 function localNoteKey(id){return `study-notes-v4-notes:${id}`}
@@ -123,7 +159,7 @@ function queueCloudSave(lessonId,payload){
 }
 function saveNotesSoon(){
  if(!current)return;
- const lessonId=current.id,payload={marks:JSON.parse(JSON.stringify(marks)),notes:{...teacherNotes},updated:new Date().toISOString()};
+ const lessonId=current.id,payload={marks:JSON.parse(JSON.stringify(marks)),notes:{...teacherNotes},titles:{...titleOverrides},updated:new Date().toISOString()};
  localStorage.setItem(localNoteKey(lessonId),JSON.stringify(payload));
  $('syncState').textContent=access?'Saving to Drive…':'✓ Saved on this device';
  clearTimeout(debounce);
@@ -151,9 +187,9 @@ async function writeCloudNotes(id,payload){
 
 async function multipartUpload(file,metadata){const boundary='study_notes_'+Date.now();const body=new Blob([`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${file.type||'application/octet-stream'}\r\n\r\n`,file,`\r\n--${boundary}--`]);return json(UPLOAD+'?uploadType=multipart&fields=id,name,mimeType',{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body})}
 async function resumableUpload(file,metadata){const session=await drive(UPLOAD+'?uploadType=resumable&fields=id,name,mimeType',{method:'POST',headers:{'Content-Type':'application/json; charset=UTF-8','X-Upload-Content-Type':file.type||'application/vnd.openxmlformats-officedocument.presentationml.presentation','X-Upload-Content-Length':String(file.size)},body:JSON.stringify(metadata)});const loc=session.headers.get('Location');if(!loc)throw Error('Google did not return an upload session URL');return json(loc,{method:'PUT',headers:{'Content-Type':file.type||'application/octet-stream'},body:file})}
-function noteBackup(){if(!current)return;const body=JSON.stringify({version:4,lessonId:current.id,lesson:current.name,marks,notes:teacherNotes},null,2);downloadBlob(new Blob([body],{type:'application/json'}),'study-notes-'+current.id+'.json')}
+function noteBackup(){if(!current)return;const body=JSON.stringify({version:8,lessonId:current.id,lesson:current.name,marks,notes:teacherNotes,titles:titleOverrides},null,2);downloadBlob(new Blob([body],{type:'application/json'}),'study-notes-'+current.id+'.json')}
 function downloadBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2500)}
-async function revision(){if(!pdf)return;show('revision');$('revisionSub').textContent=current.name+' · '+pdf.numPages+' slides';const el=$('revisionContent');el.innerHTML='<p>Preparing highlighted extracts…</p>';let output=[];for(let page=0;page<pdf.numPages;page++){const keys=Object.keys(marks).filter(k=>k.startsWith(page+':')&&marks[k]?.length);const note=teacherNotes[page]||'';if(!keys.length&&!note)continue;const data=await loadPage(page);let quotes=[];for(const k of keys){const ix=Number(k.split(':')[1]);for(const [a,b] of marks[k]){const text=data.blocks[ix]?.text.slice(a,b).trim();if(text)quotes.push(text)}}let heading=data.blocks.find(b=>b.text.length<100)?.text||'Slide '+(page+1);output.push(`<article><h2>${h(heading)} <small>· Slide ${page+1}</small></h2>${quotes.map(q=>`<p>${h(q)}</p>`).join('')}${note?`<p class="note"><b>Teacher's note:</b> ${h(note)}</p>`:''}</article>`)}el.innerHTML=output.join('')||'<p>No highlighted text yet.</p>'}
+async function revision(){if(!pdf)return;show('revision');$('revisionSub').textContent=current.name+' · '+pdf.numPages+' slides';const el=$('revisionContent');el.innerHTML='<p>Preparing highlighted extracts…</p>';let output=[];for(let page=0;page<pdf.numPages;page++){const keys=Object.keys(marks).filter(k=>k.startsWith(page+':')&&marks[k]?.length);const note=teacherNotes[page]||'';if(!keys.length&&!note)continue;const data=await loadPage(page);ensureHeadingBlock(page,data);let heading=titleForPage(page)||data.blocks.find(b=>b.text.length<100)?.text||'Slide '+(page+1);let quotes=[];for(const k of keys){const ix=Number(k.split(':')[1]);for(const [a,b] of marks[k]){const source=(ix===data.blocks.length?data.syntheticTitle:data.blocks[ix]);const text=source?.text?.slice(a,b).trim();if(text&&!sameTitle(text,heading))quotes.push(text)}}output.push(`<article><h2>${h(heading)} <small>· Slide ${page+1}</small></h2>${quotes.map(q=>`<p>${h(q)}</p>`).join('')}${note?`<p class="note"><b>Teacher's note:</b> ${h(note)}</p>`:''}</article>`)}el.innerHTML=output.join('')||'<p>No highlighted text yet.</p>'}
 
 async function resetCurrentPresentation(){
  if(!current)return;
@@ -167,9 +203,9 @@ async function resetCurrentPresentation(){
   // Wait for any earlier save before clearing this presentation; do not allow an old queued write to restore it.
   if(debounce){clearTimeout(debounce);debounce=null;}
   await cloudWriteQueue.catch(()=>{});
-  const payload={marks:{},notes:{},updated:new Date().toISOString()};
+  const payload={marks:{},notes:{},titles:{},updated:new Date().toISOString()};
   await writeCloudNotes(current.id,payload);
-  marks={};teacherNotes={};undo=[];noteHistory=[];
+  marks={};teacherNotes={};titleOverrides={};undo=[];noteHistory=[];
   localStorage.setItem(localNoteKey(current.id),JSON.stringify(payload));
   await renderSlide();
   $('syncState').textContent='✓ Reset and synced to Drive';
@@ -235,8 +271,18 @@ function localImport(){const input=document.createElement('input');input.type='f
 // Navigation and controls
 $('homeBtn').onclick=$('goHome').onclick=()=>show('home');$('accountBtn').onclick=()=>{show('account');refreshAccount()};$('backWeeks').onclick=()=>enterCategory(category);$('backLessons').onclick=()=>openWeek(week);$('previous').onclick=()=>goSlide(slide-1);$('following').onclick=()=>goSlide(slide+1);$('slideGoto').onchange=e=>goSlide(Number(e.target.value)-1);
 $('pencilBtn').onclick=()=>{erase=false;$('pencilBtn').classList.add('active');$('eraseBtn').classList.remove('active')};$('eraseBtn').onclick=()=>{erase=true;$('eraseBtn').classList.add('active');$('pencilBtn').classList.remove('active')};$('fingerBtn').onclick=()=>{finger=!finger;$('fingerBtn').textContent='Finger: '+(finger?'ON':'OFF');$('fingerBtn').classList.toggle('active',finger)};$('paragraphBtn').onclick=()=>{paragraph=!paragraph;$('paragraphBtn').textContent='Paragraph: '+(paragraph?'ON':'OFF');$('paragraphBtn').classList.toggle('active',paragraph)};$('undoBtn').onclick=()=>{if(undo.length){marks=JSON.parse(undo.pop());renderTextOnly();saveNotesSoon()}};
+$('editSlideTitle').onclick=()=>{$('titleEditWrap').classList.toggle('hidden');$('slideTitleInput').value=titleForPage(slide);};
+$('saveSlideTitle').onclick=async()=>{
+ const title=cleanTitle($('slideTitleInput').value);if(!title){toast('Enter a slide title');return;}
+ const old=slides[slide]?.syntheticTitle;
+ if(old&&old.text!==title&&marks[`${slide}:${slides[slide].blocks.length}`]?.length){
+  if(!confirm('Changing this title will clear highlights on the old title. Continue?'))return;
+  delete marks[`${slide}:${slides[slide].blocks.length}`];
+ }
+ titleOverrides[slide]=title;saveNotesSoon();await renderSlide();toast('Slide title saved for this presentation');
+};
 $('teacherNote').oninput=e=>{noteHistory.push({slide,value:teacherNotes[slide]||''});if(noteHistory.length>100)noteHistory.shift();teacherNotes[slide]=e.target.value;saveNotesSoon()};$('deleteWord').onclick=()=>{const area=$('teacherNote'),text=area.value;let a=area.selectionStart,b=area.selectionEnd;if(a===b){while(a>0&&/\s/.test(text[a-1]))a--;while(a>0&&!/\s/.test(text[a-1]))a--}const result=text.slice(0,a)+text.slice(b);area.value=result;teacherNotes[slide]=result;saveNotesSoon();area.focus();area.setSelectionRange(a,a)};$('undoText').onclick=()=>{if(!noteHistory.length)return;let j=noteHistory.length-1;while(j>=0&&noteHistory[j].slide!==slide)j--;if(j<0)return;const result=noteHistory.splice(j,1)[0].value;$('teacherNote').value=result;teacherNotes[slide]=result;saveNotesSoon()};
-$('revisionBtn').onclick=revision;$('resetLesson').onclick=resetCurrentPresentation;$('saveRevisionDrive').onclick=saveRevisionToDrive;$('quickReconnect').onclick=connect;$('returnReader').onclick=()=>show('reader');$('printRevision').onclick=()=>print();$('exportLesson').onclick=noteBackup;$('importLesson').onclick=()=>$('importJson').click();$('importJson').onchange=async e=>{try{const data=JSON.parse(await e.target.files[0].text());if(!data.marks||!data.notes)throw Error('Unrecognised file');if(!confirm('Replace this lesson’s current highlights and notes?'))return;marks=data.marks;teacherNotes=data.notes;saveNotesSoon();await revision();toast('Backup restored')}catch(err){toast(err.message)}};
+$('revisionBtn').onclick=revision;$('resetLesson').onclick=resetCurrentPresentation;$('saveRevisionDrive').onclick=saveRevisionToDrive;$('quickReconnect').onclick=connect;$('returnReader').onclick=()=>show('reader');$('printRevision').onclick=()=>print();$('exportLesson').onclick=noteBackup;$('importLesson').onclick=()=>$('importJson').click();$('importJson').onchange=async e=>{try{const data=JSON.parse(await e.target.files[0].text());if(!data.marks||!data.notes)throw Error('Unrecognised file');if(!confirm('Replace this lesson’s current highlights and notes?'))return;marks=data.marks;teacherNotes=data.notes;titleOverrides=data.titles||{};saveNotesSoon();await revision();toast('Backup restored')}catch(err){toast(err.message)}};
 $('copyDiagnostic').onclick=()=>{navigator.clipboard?.writeText(lastSaveError||'No sync error recorded').then(()=>toast('Diagnostic copied')).catch(()=>toast(lastSaveError||'No error recorded'))};
 $('retryCloud').onclick=()=>{if(current){saveNotesSoon();toast('Trying to sync this lesson again')}};$('refreshCloud').onclick=drawWeeks;$('openAdmin').onclick=()=>{show('admin');drawAdmin()};$('uploadBtn').onclick=uploadFile;$('exportLibrary').onclick=()=>downloadBlob(new Blob([JSON.stringify({library:localLibrary(),exported:new Date().toISOString()},null,2)],{type:'application/json'}),'study-notes-local-library.json');
 $('saveConfig').onclick=()=>{config={...config,clientId:$('clientId').value.trim(),folderId:$('folderId').value.trim(),adminEmail:$('adminEmail').value.trim().toLowerCase()};setConfig();toast('Settings saved on this device')};$('connectGoogle').onclick=connect;$('disconnectGoogle').onclick=()=>{if(access&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(access,()=>{});access='';identity='';notesFileId='';updateSync();refreshAccount();toast('Disconnected')};$('setupFolder').onclick=setupFolder;$('shareFolder').onclick=shareFolder;

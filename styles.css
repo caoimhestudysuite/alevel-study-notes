@@ -34,3 +34,9 @@
 .readerView .readerGrid .card{box-shadow:0 1px 4px #0e2d5112}
 @media(min-width:700px){.readerGrid{grid-template-columns:minmax(290px,0.95fr) minmax(340px,1.25fr)} .readerView .readerHeader{position:static}}
 @media(max-width:699px){.readerGrid{grid-template-columns:1fr}}
+
+/* v7 */
+#quickReconnect{font-size:12px;padding:7px 9px}
+#resetLesson{font-size:12px;border-color:#e8c6c9;background:#fff5f5;color:#982838}
+#revisionDriveStatus{max-width:850px;margin:0 auto 14px;font-size:13px}
+#revisionDriveStatus a{color:#236899;font-weight:650}

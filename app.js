@@ -4,13 +4,13 @@ const CATEGORIES=[['Law','Learn','⚖️','#2468aa'],['Law','Explore','⚖️','
 const DRIVE='https://www.googleapis.com/drive/v3/files',UPLOAD='https://www.googleapis.com/upload/drive/v3/files';
 const SCOPES='https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
 const SKEY='study-notes-v4-config',LOCAL='study-notes-v4-library';
-const APP_VERSION='6.0';
-let config=JSON.parse(localStorage.getItem(SKEY)||'{}'), access='',identity='',tokenClient=null, folderCache={},view='home',category='',week=8,library=[],current=null,pdf=null,slide=0,slides=[],marks={},teacherNotes={},undo=[],noteHistory=[],drag=null,erase=false,finger=false,paragraph=false,debounce=null,notesFileId='',notesCloud={},renderEpoch=0,cloudWriteQueue=Promise.resolve(),lastSaveError='',lessonScanEpoch=0,renderTask=null,scanTimer=null;
+const APP_VERSION='7.0';
+let config=JSON.parse(localStorage.getItem(SKEY)||'{}'), access='',identity='',tokenClient=null, folderCache={},view='home',category='',week=8,library=[],current=null,pdf=null,slide=0,slides=[],marks={},teacherNotes={},undo=[],noteHistory=[],drag=null,erase=false,finger=false,paragraph=false,debounce=null,notesFileId='',notesCloud={},renderEpoch=0,cloudWriteQueue=Promise.resolve(),lastSaveError='',lessonScanEpoch=0,renderTask=null,scanTimer=null,silentAuthInFlight=false;
 const h=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(msg){$('toast').textContent=msg;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),3500)}
 function show(name){view=name;document.querySelectorAll('.view').forEach(e=>e.classList.toggle('hidden',e.id!==name+'View'));window.scrollTo(0,0)}
 function localLibrary(){try{return JSON.parse(localStorage.getItem(LOCAL)||'[]')}catch{return []}}
-function updateSync(){ $('syncState').textContent=access?'● Google Drive connected':'● Local mode — use backup'; }
+function updateSync(){ $('syncState').textContent=access?'● Google Drive connected':'● Saved locally · Connect Google to sync';$('quickReconnect').classList.toggle('hidden',Boolean(access)||!config.clientId); }
 function diagnose(err,where){const msg=(err?.message||String(err));lastSaveError=where+': '+msg;$('syncDiagnostic').textContent=lastSaveError;$('syncDiagnostic').classList.remove('hidden');}
 function setConfig(){localStorage.setItem(SKEY,JSON.stringify(config));}
 function currentAdmin(){return Boolean(access&&identity&&config.adminEmail&&identity.toLowerCase()===config.adminEmail.toLowerCase())}
@@ -154,19 +154,93 @@ async function resumableUpload(file,metadata){const session=await drive(UPLOAD+'
 function noteBackup(){if(!current)return;const body=JSON.stringify({version:4,lessonId:current.id,lesson:current.name,marks,notes:teacherNotes},null,2);downloadBlob(new Blob([body],{type:'application/json'}),'study-notes-'+current.id+'.json')}
 function downloadBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2500)}
 async function revision(){if(!pdf)return;show('revision');$('revisionSub').textContent=current.name+' · '+pdf.numPages+' slides';const el=$('revisionContent');el.innerHTML='<p>Preparing highlighted extracts…</p>';let output=[];for(let page=0;page<pdf.numPages;page++){const keys=Object.keys(marks).filter(k=>k.startsWith(page+':')&&marks[k]?.length);const note=teacherNotes[page]||'';if(!keys.length&&!note)continue;const data=await loadPage(page);let quotes=[];for(const k of keys){const ix=Number(k.split(':')[1]);for(const [a,b] of marks[k]){const text=data.blocks[ix]?.text.slice(a,b).trim();if(text)quotes.push(text)}}let heading=data.blocks.find(b=>b.text.length<100)?.text||'Slide '+(page+1);output.push(`<article><h2>${h(heading)} <small>· Slide ${page+1}</small></h2>${quotes.map(q=>`<p>${h(q)}</p>`).join('')}${note?`<p class="note"><b>Teacher's note:</b> ${h(note)}</p>`:''}</article>`)}el.innerHTML=output.join('')||'<p>No highlighted text yet.</p>'}
-function connect(){if(!config.clientId)return toast('Enter your Google OAuth client ID in Account first');if(!window.google?.accounts?.oauth2)return toast('Google sign-in is not available yet');tokenClient=google.accounts.oauth2.initTokenClient({client_id:config.clientId,scope:SCOPES,callback:async resp=>{if(resp.error){toast(resp.error);return}access=resp.access_token;notesFileId='';try{const r=await drive('https://www.googleapis.com/oauth2/v3/userinfo');const who=await r.json();identity=who.email||'';$('whoAmI').textContent='Signed in: '+identity;updateSync();show('home');toast('Connected to Google Drive')}catch(e){toast(e.message)}}});tokenClient.requestAccessToken({prompt:'consent'})}
+
+async function resetCurrentPresentation(){
+ if(!current)return;
+ if(!access||current.id.startsWith('local-')){toast('Connect Google Drive before resetting a cloud presentation.');return;}
+ const name=current.name;
+ const choice=confirm(`Reset all highlights and additional teacher notes for ONLY this presentation?\n\n${category} → Week ${week} → ${name}\n\nOther presentations, subjects and weeks will not be changed.\n\nThis cannot be undone.`);
+ if(!choice)return;
+ if(prompt('To confirm deletion, type RESET (capital letters):')!=='RESET'){toast('Reset cancelled');return;}
+ const button=$('resetLesson');button.disabled=true;button.textContent='Resetting…';
+ try{
+  // Wait for any earlier save before clearing this presentation; do not allow an old queued write to restore it.
+  if(debounce){clearTimeout(debounce);debounce=null;}
+  await cloudWriteQueue.catch(()=>{});
+  const payload={marks:{},notes:{},updated:new Date().toISOString()};
+  await writeCloudNotes(current.id,payload);
+  marks={};teacherNotes={};undo=[];noteHistory=[];
+  localStorage.setItem(localNoteKey(current.id),JSON.stringify(payload));
+  await renderSlide();
+  $('syncState').textContent='✓ Reset and synced to Drive';
+  toast('Only this presentation was reset.');
+ }catch(err){diagnose(err,'Reset presentation');toast('Reset was NOT completed — Drive could not confirm the change.');}
+ finally{button.disabled=false;button.textContent='Reset this presentation';}
+}
+async function saveRevisionToDrive(){
+ if(!current||!pdf)return;
+ if(!access||!config.folderId){$('revisionDriveStatus').textContent='Connect Google Drive first to save a printable copy.';return;}
+ const btn=$('saveRevisionDrive');btn.disabled=true;
+ $('revisionDriveStatus').textContent='Creating printable Google document…';
+ try{
+  const folder=await folderNamed(config.folderId,'Revision Notes',true);
+  const now=new Date();
+  const stamp=now.toISOString().slice(0,16).replace('T',' ').replace(':','-');
+  const filename=`${category} - Week ${week} - ${current.name} - ${stamp}`.replace(/[\/<>:|?*]/g,'-').slice(0,180);
+  const title=`${h(category)} — Week ${week} — ${h(current.name)}`;
+  const content=`<!doctype html><html><head><meta charset="UTF-8"><title>${title}</title><style>body{font-family:Arial,sans-serif;color:#24354b;margin:36px;line-height:1.55}h1{font-size:22px}h2{font-size:17px;border-bottom:1px solid #ddd;padding-bottom:6px}.note{background:#f0f4f8;border-left:3px solid #7198bb;padding:10px}article{margin-bottom:24px}</style></head><body><h1>${title}</h1><p>Revision notes saved ${h(now.toLocaleString('en-GB'))}</p>${$('revisionContent').innerHTML}</body></html>`;
+  // Drive imports a text/html file directly into Google Docs; a dated snapshot keeps past revisions intact.
+  const result=await multipartUpload(new Blob([content],{type:'text/html'}),{name:filename,mimeType:'application/vnd.google-apps.document',parents:[folder]});
+  $('revisionDriveStatus').replaceChildren(document.createTextNode('Saved as a Google Doc in A-Level Study Notes / Revision Notes. '));
+  const link=document.createElement('a');link.href=`https://docs.google.com/document/d/${encodeURIComponent(result.id)}/edit`;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Open saved revision notes';$('revisionDriveStatus').append(link);
+  toast('Revision notes saved to Google Drive');
+ }catch(err){diagnose(err,'Save revision document');$('revisionDriveStatus').textContent='Could not save revision document: '+err.message;}
+ finally{btn.disabled=false;}
+}
+
+function makeTokenClient(silent=false){
+ if(!config.clientId||!window.google?.accounts?.oauth2)return false;
+ tokenClient=google.accounts.oauth2.initTokenClient({client_id:config.clientId,scope:SCOPES,callback:async resp=>{
+  silentAuthInFlight=false;
+  if(resp.error||!resp.access_token){if(!silent)toast('Google sign-in was not completed.');updateSync();return;}
+  access=resp.access_token;notesFileId='';
+  try{
+   const r=await drive('https://www.googleapis.com/oauth2/v3/userinfo');
+   const who=await r.json();identity=who.email||'';
+   updateSync();refreshAccount();
+   if(view==='weeks')await drawWeeks();else if(view==='lessons')await listLessons();
+   if(!silent)toast('Connected to Google Drive');
+  }catch(e){access='';identity='';updateSync();if(!silent)toast(e.message);}
+ }});
+ return true;
+}
+function connect(){
+ if(!config.clientId)return toast('Enter your Google OAuth client ID in Account first');
+ if(!makeTokenClient(false))return toast('Google sign-in is not available yet');
+ tokenClient.requestAccessToken({prompt:'consent'});
+}
+function trySilentReconnect(){
+ // Google Identity Services token access only. No OAuth access token or refresh token in localStorage.
+ // Safari privacy rules may prevent silent restoration; the one-tap reconnect remains available.
+ if(access||silentAuthInFlight||!makeTokenClient(true))return;
+ silentAuthInFlight=true;
+ try{tokenClient.requestAccessToken({prompt:''});}catch{silentAuthInFlight=false;updateSync();}
+}
+
 async function uploadFile(){if(!currentAdmin())return toast('Sign in as the library owner to upload');const file=$('adminFile').files[0],cat=$('adminCategory').value,n=Number($('adminWeek').value),title=$('adminTitle').value.trim()||file?.name?.replace(/\.[^.]+$/,'');if(!file||!n)return toast('Select a file and week');if(!/\.(pptx|pdf)$/i.test(file.name))return toast('Choose a PPTX or PDF');const status=$('uploadStatus');$('uploadBtn').disabled=true;status.textContent='Preparing Google Drive folder…';try{const folder=await ensureCategoryFolders(cat,n,true);status.textContent='Uploading presentation securely…';let metadata={name:title,parents:[folder],mimeType:/\.pptx$/i.test(file.name)?'application/vnd.google-apps.presentation':'application/pdf',description:`Study Notes · ${cat} · Week ${n}`};const uploaded=await resumableUpload(file,metadata);status.textContent='Uploaded '+uploaded.name+'. The presentation is now available in Week '+n+'.';$('adminFile').value='';folderCache={};toast('Lesson published');await drawAdmin()}catch(err){status.textContent='Upload failed: '+err.message}finally{$('uploadBtn').disabled=false}}
 async function drawAdmin(){const el=$('manageList');if(!currentAdmin()){el.innerHTML='<p>Sign in with the dedicated owner Google account to manage lessons.</p>';return}el.textContent='Loading lessons…';try{let items=[];for(const [subject,kind] of CATEGORIES){const c=subject+' '+kind;const root=await folderNamed(config.folderId,c);if(!root)continue;for(const folder of (await listChildren(root)).filter(f=>f.mimeType==='application/vnd.google-apps.folder')){for(const file of await listChildren(folder.id)){if(file.mimeType==='application/pdf'||file.mimeType==='application/vnd.google-apps.presentation')items.push({...file,category:c,week:folder.name})}}}el.innerHTML=items.length?'':'<p>No uploads yet.</p>';for(const f of items){let line=document.createElement('div');line.className='manageRow';const text=document.createElement('span');text.textContent=`${f.category} · ${f.week} · ${f.name}`;const del=document.createElement('button');del.textContent='Remove';del.className='danger';del.onclick=async()=>{if(!confirm('Remove '+f.name+' from the library? This may affect existing annotations.'))return;try{await drive(DRIVE+'/'+f.id,{method:'DELETE'});toast('Presentation removed');await drawAdmin()}catch(e){toast(e.message)}};line.append(text,del);el.append(line)}}catch(e){el.textContent=e.message}}
 async function setupFolder(){if(!currentAdmin())return toast('Sign in as the dedicated owner first');try{const root=await folderNamed('root','A-Level Study Notes',true);config.folderId=root;setConfig();$('folderId').value=root;toast('Private library folder created');await drawAdmin()}catch(e){toast(e.message)}}
 async function shareFolder(){if(!currentAdmin()||!config.folderId)return toast('Create the library first');const email=$('studentEmail').value.trim();if(!email)return toast('Enter the student Google account email');if(!confirm(`Grant ${email} read-only access to the full study library?`))return;try{await json(`${DRIVE}/${config.folderId}/permissions?sendNotificationEmail=true`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'user',role:'reader',emailAddress:email})});toast('Library shared with student')}catch(e){toast(e.message)}}
 function localImport(){const input=document.createElement('input');input.type='file';input.accept='.pdf,application/pdf';input.onchange=async()=>{const f=input.files?.[0];if(!f)return;const entry={id:'local-'+f.name+'-'+f.size,name:f.name,mimeType:'application/pdf',category:category||'Law Learn',week:week||8,localBytes:new Uint8Array(await f.arrayBuffer())};await openLesson(entry);toast('Local PDF loaded. Reopen the same file later to resume saved notes. Export backups regularly.')};input.click()}
 // Navigation and controls
-$('tryPdf').onclick=localImport;$('homeBtn').onclick=$('goHome').onclick=()=>show('home');$('accountBtn').onclick=()=>{show('account');refreshAccount()};$('backWeeks').onclick=()=>enterCategory(category);$('backLessons').onclick=()=>openWeek(week);$('previous').onclick=()=>goSlide(slide-1);$('following').onclick=()=>goSlide(slide+1);$('slideGoto').onchange=e=>goSlide(Number(e.target.value)-1);
+$('homeBtn').onclick=$('goHome').onclick=()=>show('home');$('accountBtn').onclick=()=>{show('account');refreshAccount()};$('backWeeks').onclick=()=>enterCategory(category);$('backLessons').onclick=()=>openWeek(week);$('previous').onclick=()=>goSlide(slide-1);$('following').onclick=()=>goSlide(slide+1);$('slideGoto').onchange=e=>goSlide(Number(e.target.value)-1);
 $('pencilBtn').onclick=()=>{erase=false;$('pencilBtn').classList.add('active');$('eraseBtn').classList.remove('active')};$('eraseBtn').onclick=()=>{erase=true;$('eraseBtn').classList.add('active');$('pencilBtn').classList.remove('active')};$('fingerBtn').onclick=()=>{finger=!finger;$('fingerBtn').textContent='Finger: '+(finger?'ON':'OFF');$('fingerBtn').classList.toggle('active',finger)};$('paragraphBtn').onclick=()=>{paragraph=!paragraph;$('paragraphBtn').textContent='Paragraph: '+(paragraph?'ON':'OFF');$('paragraphBtn').classList.toggle('active',paragraph)};$('undoBtn').onclick=()=>{if(undo.length){marks=JSON.parse(undo.pop());renderTextOnly();saveNotesSoon()}};
 $('teacherNote').oninput=e=>{noteHistory.push({slide,value:teacherNotes[slide]||''});if(noteHistory.length>100)noteHistory.shift();teacherNotes[slide]=e.target.value;saveNotesSoon()};$('deleteWord').onclick=()=>{const area=$('teacherNote'),text=area.value;let a=area.selectionStart,b=area.selectionEnd;if(a===b){while(a>0&&/\s/.test(text[a-1]))a--;while(a>0&&!/\s/.test(text[a-1]))a--}const result=text.slice(0,a)+text.slice(b);area.value=result;teacherNotes[slide]=result;saveNotesSoon();area.focus();area.setSelectionRange(a,a)};$('undoText').onclick=()=>{if(!noteHistory.length)return;let j=noteHistory.length-1;while(j>=0&&noteHistory[j].slide!==slide)j--;if(j<0)return;const result=noteHistory.splice(j,1)[0].value;$('teacherNote').value=result;teacherNotes[slide]=result;saveNotesSoon()};
-$('revisionBtn').onclick=revision;$('returnReader').onclick=()=>show('reader');$('printRevision').onclick=()=>print();$('exportLesson').onclick=noteBackup;$('importLesson').onclick=()=>$('importJson').click();$('importJson').onchange=async e=>{try{const data=JSON.parse(await e.target.files[0].text());if(!data.marks||!data.notes)throw Error('Unrecognised file');if(!confirm('Replace this lesson’s current highlights and notes?'))return;marks=data.marks;teacherNotes=data.notes;saveNotesSoon();await revision();toast('Backup restored')}catch(err){toast(err.message)}};
+$('revisionBtn').onclick=revision;$('resetLesson').onclick=resetCurrentPresentation;$('saveRevisionDrive').onclick=saveRevisionToDrive;$('quickReconnect').onclick=connect;$('returnReader').onclick=()=>show('reader');$('printRevision').onclick=()=>print();$('exportLesson').onclick=noteBackup;$('importLesson').onclick=()=>$('importJson').click();$('importJson').onchange=async e=>{try{const data=JSON.parse(await e.target.files[0].text());if(!data.marks||!data.notes)throw Error('Unrecognised file');if(!confirm('Replace this lesson’s current highlights and notes?'))return;marks=data.marks;teacherNotes=data.notes;saveNotesSoon();await revision();toast('Backup restored')}catch(err){toast(err.message)}};
 $('copyDiagnostic').onclick=()=>{navigator.clipboard?.writeText(lastSaveError||'No sync error recorded').then(()=>toast('Diagnostic copied')).catch(()=>toast(lastSaveError||'No error recorded'))};
 $('retryCloud').onclick=()=>{if(current){saveNotesSoon();toast('Trying to sync this lesson again')}};$('refreshCloud').onclick=drawWeeks;$('openAdmin').onclick=()=>{show('admin');drawAdmin()};$('uploadBtn').onclick=uploadFile;$('exportLibrary').onclick=()=>downloadBlob(new Blob([JSON.stringify({library:localLibrary(),exported:new Date().toISOString()},null,2)],{type:'application/json'}),'study-notes-local-library.json');
 $('saveConfig').onclick=()=>{config={...config,clientId:$('clientId').value.trim(),folderId:$('folderId').value.trim(),adminEmail:$('adminEmail').value.trim().toLowerCase()};setConfig();toast('Settings saved on this device')};$('connectGoogle').onclick=connect;$('disconnectGoogle').onclick=()=>{if(access&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(access,()=>{});access='';identity='';notesFileId='';updateSync();refreshAccount();toast('Disconnected')};$('setupFolder').onclick=setupFolder;$('shareFolder').onclick=shareFolder;
 function refreshAccount(){$('clientId').value=config.clientId||'';$('folderId').value=config.folderId||'';$('adminEmail').value=config.adminEmail||'';$('whoAmI').textContent=identity?'Signed in: '+identity:'Not signed in to Google';}
 initSubjects();refreshAccount();updateSync();show('home');
+window.addEventListener('load',()=>setTimeout(trySilentReconnect,700));
+window.addEventListener('pageshow',event=>{if(event.persisted&&!access)trySilentReconnect()});

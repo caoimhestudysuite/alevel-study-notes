@@ -4,7 +4,7 @@ const CATEGORIES=[['Law','Learn','⚖️','#2468aa'],['Law','Explore','⚖️','
 const DRIVE='https://www.googleapis.com/drive/v3/files',UPLOAD='https://www.googleapis.com/upload/drive/v3/files';
 const SCOPES='https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
 const SKEY='study-notes-v4-config',LOCAL='study-notes-v4-library';
-const APP_VERSION='8.0';
+const APP_VERSION='8.3';
 let config=JSON.parse(localStorage.getItem(SKEY)||'{}'), access='',identity='',tokenClient=null, folderCache={},view='home',category='',week=8,library=[],current=null,pdf=null,slide=0,slides=[],marks={},teacherNotes={},undo=[],noteHistory=[],drag=null,erase=false,finger=false,paragraph=false,debounce=null,notesFileId='',notesCloud={},renderEpoch=0,cloudWriteQueue=Promise.resolve(),lastSaveError='',lessonScanEpoch=0,renderTask=null,scanTimer=null,silentAuthInFlight=false,slideTitles={},titleOverrides={};
 const h=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(msg){$('toast').textContent=msg;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),3500)}
@@ -189,7 +189,57 @@ async function multipartUpload(file,metadata){const boundary='study_notes_'+Date
 async function resumableUpload(file,metadata){const session=await drive(UPLOAD+'?uploadType=resumable&fields=id,name,mimeType',{method:'POST',headers:{'Content-Type':'application/json; charset=UTF-8','X-Upload-Content-Type':file.type||'application/vnd.openxmlformats-officedocument.presentationml.presentation','X-Upload-Content-Length':String(file.size)},body:JSON.stringify(metadata)});const loc=session.headers.get('Location');if(!loc)throw Error('Google did not return an upload session URL');return json(loc,{method:'PUT',headers:{'Content-Type':file.type||'application/octet-stream'},body:file})}
 function noteBackup(){if(!current)return;const body=JSON.stringify({version:8,lessonId:current.id,lesson:current.name,marks,notes:teacherNotes,titles:titleOverrides},null,2);downloadBlob(new Blob([body],{type:'application/json'}),'study-notes-'+current.id+'.json')}
 function downloadBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2500)}
-async function revision(){if(!pdf)return;show('revision');$('revisionSub').textContent=current.name+' · '+pdf.numPages+' slides';const el=$('revisionContent');el.innerHTML='<p>Preparing highlighted extracts…</p>';let output=[];for(let page=0;page<pdf.numPages;page++){const keys=Object.keys(marks).filter(k=>k.startsWith(page+':')&&marks[k]?.length);const note=teacherNotes[page]||'';if(!keys.length&&!note)continue;const data=await loadPage(page);ensureHeadingBlock(page,data);let heading=titleForPage(page)||data.blocks.find(b=>b.text.length<100)?.text||'Slide '+(page+1);let quotes=[];for(const k of keys){const ix=Number(k.split(':')[1]);for(const [a,b] of marks[k]){const source=(ix===data.blocks.length?data.syntheticTitle:data.blocks[ix]);const text=source?.text?.slice(a,b).trim();if(text&&!sameTitle(text,heading))quotes.push(text)}}output.push(`<article><h2>${h(heading)} <small>· Slide ${page+1}</small></h2>${quotes.map(q=>`<p>${h(q)}</p>`).join('')}${note?`<p class="note"><b>Teacher's note:</b> ${h(note)}</p>`:''}</article>`)}el.innerHTML=output.join('')||'<p>No highlighted text yet.</p>'}
+// Export only: never change PDF blocks or stored highlight offsets.
+function revisionPoints(data,page,heading,selection){
+ const norm=t=>String(t||'').replace(/\s+/g,' ').trim();
+ const titleKey=t=>norm(t).toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
+ const title=titleKey(heading), points=[];
+ let pending='', previous=null;
+ const flush=()=>{if(pending.trim())points.push(pending.trim());pending='';previous=null;};
+ const terminal=t=>/[.!?][”’"')\]]*$/.test(t)&&!/(?:\b(?:v|Mr|Mrs|Dr|St|etc|e\.g|i\.e)\.)$/i.test(t);
+ for(let i=0;i<=data.blocks.length;i++){
+  const block=i===data.blocks.length?data.syntheticTitle:data.blocks[i];
+  if(!block||block.synthetic)continue;
+  const source=block.text||'', ranges=unite((selection[`${page}:${i}`]||[]).map(([a,b])=>[Math.max(0,Math.min(source.length,a)),Math.max(0,Math.min(source.length,b))]));
+  if(!ranges.length)continue;
+  if(title&&titleKey(source)===title)continue;
+  for(const [a,b] of ranges){
+   let text=norm(source.slice(a,b));if(!text)continue;
+   // Ignore a repeated full heading, not arbitrary words matching its title.
+   if(title&&titleKey(text)===title)continue;
+   const bullet=/^\s*(?:[•●▪◦]|[-–]\s|\d+[.)]\s)/.test(source)&&a<=source.search(/\S/)+3;
+   const gap=previous&&previous.i===i?source.slice(previous.b,a):'';
+   const adjacent=previous&&(previous.i===i||previous.i+1===i);
+   const lineGap=previous&&previous.i!==i?Math.abs(block.y-previous.block.y):0;
+   const separate=!adjacent||bullet||terminal(pending)||(/[.!?](?:\s|$)/.test(gap))||(previous&&previous.i!==i&&lineGap>45);
+   if(pending&&separate)flush();
+   if(pending){
+    // Only restore short grammatical connectors actually present in the source.
+    const connector=norm(gap);
+    const safe=connector&&/^(?:(?:a|an|the|of|to|in|on|at|for|by|with|and|or|as|is|are|was|were|be|been|that|which|who|it|its)\s*){1,3}$/i.test(connector)&&connector.split(/\s+/).length<=3;
+    pending+=' '+(safe?connector+' ':'')+text;
+   }else pending=text;
+   previous={i,b,block};
+  }
+ }
+ flush();return points;
+}
+async function revision(){
+ if(!pdf)return;show('revision');$('revisionSub').textContent=current.name+' · '+pdf.numPages+' slides';
+ const el=$('revisionContent');el.innerHTML='<p>Preparing highlighted extracts…</p>';
+ const output=[];let group=null;
+ for(let page=0;page<pdf.numPages;page++){
+  const keys=Object.keys(marks).filter(k=>k.startsWith(page+':')&&marks[k]?.length),note=teacherNotes[page]||'';
+  if(!keys.length&&!note)continue;
+  const data=await loadPage(page);ensureHeadingBlock(page,data);
+  const heading=titleForPage(page)||data.blocks.find(b=>b.text.length<100)?.text||'Slide '+(page+1);
+  const points=revisionPoints(data,page,heading,marks);
+  if(!points.length&&!note)continue;
+  if(!group||!sameTitle(group.heading,heading)){group={heading,parts:[]};output.push(group);}
+  group.parts.push(`<div class="revision-slide"><p class="slide-ref">Slide ${page+1}</p>${points.map(q=>`<p class="revision-point">${h(q)}</p>`).join('')}${note?`<p class="note"><b>Teacher's note:</b> ${h(note)}</p>`:''}</div>`);
+ }
+ el.innerHTML=output.map(g=>`<article><h2>${h(g.heading)}</h2>${g.parts.join('')}</article>`).join('')||'<p>No highlighted text yet.</p>';
+}
 
 async function resetCurrentPresentation(){
  if(!current)return;
@@ -224,7 +274,7 @@ async function saveRevisionToDrive(){
   const stamp=now.toISOString().slice(0,16).replace('T',' ').replace(':','-');
   const filename=`${category} - Week ${week} - ${current.name} - ${stamp}`.replace(/[\/<>:|?*]/g,'-').slice(0,180);
   const title=`${h(category)} — Week ${week} — ${h(current.name)}`;
-  const content=`<!doctype html><html><head><meta charset="UTF-8"><title>${title}</title><style>body{font-family:Arial,sans-serif;color:#24354b;margin:36px;line-height:1.55}h1{font-size:22px}h2{font-size:17px;border-bottom:1px solid #ddd;padding-bottom:6px}.note{background:#f0f4f8;border-left:3px solid #7198bb;padding:10px}article{margin-bottom:24px}</style></head><body><h1>${title}</h1><p>Revision notes saved ${h(now.toLocaleString('en-GB'))}</p>${$('revisionContent').innerHTML}</body></html>`;
+  const content=`<!doctype html><html><head><meta charset="UTF-8"><title>${title}</title><style>body{font-family:Arial,sans-serif;color:#24354b;margin:36px;line-height:1.35}h1{font-size:22px}h2{font-size:17px;margin:16px 0 5px}p{margin:4px 0 7px}.slide-ref{font-size:11px;color:#657080;margin:8px 0 3px}.revision-point{margin:3px 0 6px}.note{background:#f0f4f8;border-left:3px solid #7198bb;padding:10px}article{margin-bottom:14px}</style></head><body><h1>${title}</h1><p>Revision notes saved ${h(now.toLocaleString('en-GB'))}</p>${$('revisionContent').innerHTML}</body></html>`;
   // Drive imports a text/html file directly into Google Docs; a dated snapshot keeps past revisions intact.
   const result=await multipartUpload(new Blob([content],{type:'text/html'}),{name:filename,mimeType:'application/vnd.google-apps.document',parents:[folder]});
   $('revisionDriveStatus').replaceChildren(document.createTextNode('Saved as a Google Doc in A-Level Study Notes / Revision Notes. '));

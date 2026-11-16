@@ -49,3 +49,6 @@
 .slideTitleEdit input{flex:1;min-width:190px;padding:8px;border:1px solid #c8d5e2;border-radius:7px}
 .slideTitleEdit button{background:#236899;color:#fff}
 @media(max-width:700px){.slideTitleControls{padding:8px 10px 0}.slideTitleEdit{flex-direction:column;align-items:stretch}}
+
+/* Compact revision preview and print; reader styles unchanged. */
+.paper h2{border-bottom:0;padding-bottom:0;margin:18px 0 5px}.paper .revision-point{margin:3px 0 7px;line-height:1.4;white-space:normal}.paper .slide-ref{font-size:12px;color:#657080;margin:9px 0 3px}.paper article{margin-bottom:14px}@media print{.paper article{break-inside:auto}.paper .slide-ref{break-after:avoid}.paper .revision-point{orphans:2;widows:2}}

@@ -52,3 +52,10 @@
 
 /* Compact revision preview and print; reader styles unchanged. */
 .paper h2{border-bottom:0;padding-bottom:0;margin:18px 0 5px}.paper .revision-point{margin:3px 0 7px;line-height:1.4;white-space:normal}.paper .slide-ref{font-size:12px;color:#657080;margin:9px 0 3px}.paper article{margin-bottom:14px}@media print{.paper article{break-inside:auto}.paper .slide-ref{break-after:avoid}.paper .revision-point{orphans:2;widows:2}}
+
+/* Keep each topic heading visually attached to its first slide. */
+.paper article{margin:0;padding:0}
+.paper article + article{padding-top:18px}
+.paper article h2{margin:0 0 3px;break-after:avoid}
+.paper article h2 + .revision-slide > .slide-ref{margin-top:0}
+.paper .slide-ref{margin:9px 0 3px;break-after:avoid}

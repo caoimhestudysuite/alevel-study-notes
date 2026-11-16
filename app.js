@@ -4,7 +4,7 @@ const CATEGORIES=[['Law','Learn','⚖️','#2468aa'],['Law','Explore','⚖️','
 const DRIVE='https://www.googleapis.com/drive/v3/files',UPLOAD='https://www.googleapis.com/upload/drive/v3/files';
 const SCOPES='https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
 const SKEY='study-notes-v4-config',LOCAL='study-notes-v4-library';
-const APP_VERSION='8.3';
+const APP_VERSION='8.4';
 let config=JSON.parse(localStorage.getItem(SKEY)||'{}'), access='',identity='',tokenClient=null, folderCache={},view='home',category='',week=8,library=[],current=null,pdf=null,slide=0,slides=[],marks={},teacherNotes={},undo=[],noteHistory=[],drag=null,erase=false,finger=false,paragraph=false,debounce=null,notesFileId='',notesCloud={},renderEpoch=0,cloudWriteQueue=Promise.resolve(),lastSaveError='',lessonScanEpoch=0,renderTask=null,scanTimer=null,silentAuthInFlight=false,slideTitles={},titleOverrides={};
 const h=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(msg){$('toast').textContent=msg;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),3500)}
@@ -274,7 +274,17 @@ async function saveRevisionToDrive(){
   const stamp=now.toISOString().slice(0,16).replace('T',' ').replace(':','-');
   const filename=`${category} - Week ${week} - ${current.name} - ${stamp}`.replace(/[\/<>:|?*]/g,'-').slice(0,180);
   const title=`${h(category)} — Week ${week} — ${h(current.name)}`;
-  const content=`<!doctype html><html><head><meta charset="UTF-8"><title>${title}</title><style>body{font-family:Arial,sans-serif;color:#24354b;margin:36px;line-height:1.35}h1{font-size:22px}h2{font-size:17px;margin:16px 0 5px}p{margin:4px 0 7px}.slide-ref{font-size:11px;color:#657080;margin:8px 0 3px}.revision-point{margin:3px 0 6px}.note{background:#f0f4f8;border-left:3px solid #7198bb;padding:10px}article{margin-bottom:14px}</style></head><body><h1>${title}</h1><p>Revision notes saved ${h(now.toLocaleString('en-GB'))}</p>${$('revisionContent').innerHTML}</body></html>`;
+  // Flatten layout wrappers for Google Docs HTML import: spacing belongs to paragraphs, not containers.
+  const exportBody=Array.from($('revisionContent').querySelectorAll('h2, p')).map(node=>{
+   const copy=node.cloneNode(true);
+   if(copy.tagName==='H2')copy.setAttribute('style','font-size:17pt;font-weight:bold;margin:18pt 0 3pt;page-break-after:avoid;');
+   else if(copy.classList.contains('slide-ref')){
+    const first=node.parentElement?.previousElementSibling?.tagName==='H2';
+    copy.setAttribute('style',`font-size:10pt;color:#657080;margin:${first?0:9}pt 0 3pt;page-break-after:avoid;`);
+   }else if(copy.classList.contains('revision-point'))copy.setAttribute('style','margin:0 0 5pt;line-height:1.35;');
+   return copy.outerHTML;
+  }).join('');
+  const content=`<!doctype html><html><head><meta charset="UTF-8"><title>${title}</title><style>body{font-family:Arial,sans-serif;color:#24354b;margin:36px;line-height:1.35}h1{font-size:22px}h2{font-size:17px;margin:16px 0 5px}p{margin:4px 0 7px}.slide-ref{font-size:11px;color:#657080;margin:8px 0 3px}.revision-point{margin:3px 0 6px}.note{background:#f0f4f8;border-left:3px solid #7198bb;padding:10px}article{margin-bottom:14px}</style></head><body><h1>${title}</h1><p>Revision notes saved ${h(now.toLocaleString('en-GB'))}</p>${exportBody}</body></html>`;
   // Drive imports a text/html file directly into Google Docs; a dated snapshot keeps past revisions intact.
   const result=await multipartUpload(new Blob([content],{type:'text/html'}),{name:filename,mimeType:'application/vnd.google-apps.document',parents:[folder]});
   $('revisionDriveStatus').replaceChildren(document.createTextNode('Saved as a Google Doc in A-Level Study Notes / Revision Notes. '));
